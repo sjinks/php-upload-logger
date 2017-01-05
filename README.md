@@ -1,5 +1,8 @@
 # php-upload-logger
 
+[![Build Status](https://travis-ci.org/sjinks/php-upload-logger.png?branch=master)](https://travis-ci.org/sjinks/php-upload-logger)
+[![Coverity Scan Build Status](https://scan.coverity.com/projects/11356/badge.svg)](https://scan.coverity.com/projects/sjinks-php-upload-logger)
+
 PHP extension to track and log all file uploads.
 
 ## About
