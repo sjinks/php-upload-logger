@@ -1,16 +1,27 @@
 language:
   - php
 
-env:
-  matrix:
-    - CC=gcc   CFLAGS="-O2 -g -std=gnu90 -Wall -Wextra -Wno-unused-parameter"
-    - CC=clang CFLAGS="-O2 -g -std=gnu90 -Wall -Wextra -Wno-unused-parameter"
-
 sudo: false
 
 php:
   - 7.0
-  - 7.1
+
+env:
+  global:
+    - secure: "e01cQ0IgstCDE9pC7J/M0J/tTumlrBrtbPXJK3PgO9JgvVwmptYlsPxJLqAykGQux5tzME8nScL0AogoI0t78Fk7fqk+BAF6X7TadVRN9QWHl8wBYv/fHSQTnTjAXzV4uS2Q+KBLjm/XzOft8iulK1xoFCEDbH/emsZt0Y8uJso0m2PkiJrlfnSPGss08fcW8K1BEo4E8JzpmQmsl2YZURg9yJW1Z6NyQM/SerWidpzydyAmo9nMOQ682K7NrMrnnHZ4nUccz1eZU3SE9OyfM4WgthQUaQySLFKz1yrBXgP3TohSKgai6oNtDBe0WstL44DTXA+iYnGacsg0SBcSUOMGRVtLmUD8bQx/Yqm8UWM/ffHbL2aSt+eppYvgOeT5ZAhEcmViX/aB/oNnHume/gdXbZXp0fYZgamMesaTMC+O0XNHMIZckXflSYH6vxhXFo7NWGzTsQEe0uxZ2pKxGLA4lIwTvIeYp+41T8a0+Jhv/H/67qAPYJr6ZCuTu6C9XVVz2ls25fJzJ7o2KpBAUIqz+GVHFr7ZDTOIlY2YHWNM/Okr49a4VtQR4IDwBWYjUgWkj3YAScx/E0yzOXnqD49OUpNJBSNbs0cD6dygbsfP3mYG3tbZKvNC/GDf50bL6kKNFeWXp4WkD5gcK69lCKjtTKIePNM3ftPiFqDW84U="
+
+before_install:
+  - echo -n | openssl s_client -connect scan.coverity.com:443 | sed -ne '/-BEGIN CERTIFICATE-/,/-END CERTIFICATE-/p' | sudo tee -a /etc/ssl/certs/ca-
+
+addons:
+  coverity_scan:
+    project:
+      name: "sjinks/php-upload-logger"
+      description: "php-upload-logger"
+    notification_email: volodymyr@wildwolf.name
+    build_command_prepend: "phpize && ./configure"
+    build_command: "make"
+    branch_pattern: coverity
 
 script:
-  - phpize && ./configure --silent && make --silent && make install
+  - make
