@@ -1,0 +1,16 @@
+language:
+  - php
+
+env:
+  matrix:
+    - CC=gcc   CFLAGS="-O2 -g -std=gnu90 -Wall -Wextra -Wno-unused-parameter"
+    - CC=clang CFLAGS="-O2 -g -std=gnu90 -Wall -Wextra -Wno-unused-parameter"
+
+sudo: false
+
+php:
+  - 7.0
+  - 7.1
+
+script:
+  - phpize && ./configure --silent && make --silent && make install
