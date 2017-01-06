@@ -279,8 +279,33 @@ static int my_rfc1867_callback(unsigned int event, void* event_data, void** extr
                 get_current_time(&s);
                 smart_string_appends(&s, " File ID: ");
                 get_fileid(&s);
-                smart_string_appends(&s, "\nTemporary filename: ");
-                smart_string_appends(&s, filename ? filename : "N/A");
+
+                /*
+                 * This is what PHP does:
+                 *      temp_filename = NULL;
+                 *
+                 *      // ...
+                 *
+                 *      if (filename[0] == '\0') {
+                 *          cancel_upload = UPLOAD_ERROR_D;
+                 *      }
+                 *
+                 *      // ...
+                 *
+                 *      if (!cancel_upload) {
+                 *          // ...
+                 *
+                 *          fd = php_open_temporary_fd_ex(PG(upload_tmp_dir), "php", &temp_filename, 1);
+                 *      }
+                 *
+                 *  Thus, for UPLOAD_ERROR_D ( == 4, "No file uploaded"), data->temp_filename
+                 *  will be garbage (ZSTR_VAL(NULL)).
+                 */
+                if (data->cancel_upload != 4) {
+                    smart_string_appends(&s, "\nTemporary filename: ");
+                    smart_string_appends(&s, filename ? filename : "N/A");
+                }
+
                 smart_string_appends(&s, "\nUpload status: ");
                 smart_string_append_long(&s, data->cancel_upload);
                 smart_string_appendc(&s, '\n');

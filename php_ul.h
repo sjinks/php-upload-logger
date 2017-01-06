@@ -10,7 +10,7 @@
 #include <Zend/zend_modules.h>
 
 #define PHP_UL_EXTNAME  "Upload Logger"
-#define PHP_UL_EXTVER   "0.2"
+#define PHP_UL_EXTVER   "0.3"
 
 #if defined(__GNUC__) && __GNUC__ >= 4
 #	define UL_VISIBILITY_HIDDEN __attribute__((visibility("hidden")))
