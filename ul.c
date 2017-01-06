@@ -32,6 +32,23 @@ static char* get_filename()
     return buf;
 }
 
+static void get_fileid(smart_string* s)
+{
+    unsigned long int pid = (unsigned long int)getpid();
+    unsigned long int ctr = (unsigned long int)UL_G(file_id);
+#ifdef ZTS
+    unsigned long int tid = (unsigned long int)tsrm_thread_id();
+#endif
+
+    smart_string_append_long(s, pid);
+    smart_string_appendc(s, '_');
+#ifdef ZTS
+    smart_string_append_long(s, tid);
+    smart_string_appendc(s, '_');
+#endif
+    smart_string_append_long(s, ctr);
+}
+
 static void get_remote_addr(smart_string* s)
 {
     char* remote_addr          = NULL;
@@ -149,9 +166,9 @@ static int my_rfc1867_callback(unsigned int event, void* event_data, void** extr
 
             efree(filename);
             UL_G(fd) = fd;
+            ++UL_G(file_id);
 
             {
-                size_t file_id        = ++UL_G(file_id);
                 smart_string s        = { NULL, 0, 0 };
                 char* filename        = *(data->filename);
                 char* path_translated = SG(request_info).path_translated;
@@ -160,7 +177,7 @@ static int my_rfc1867_callback(unsigned int event, void* event_data, void** extr
 
                 get_current_time(&s);
                 smart_string_appends(&s, " File ID: ");
-                smart_string_append_long(&s, (unsigned long int)file_id);
+                get_fileid(&s);
                 smart_string_appends(&s, "\nFilename: ");
                 smart_string_appends(&s, filename ? filename : "N/A");
                 smart_string_appends(&s, "\nREQUEST_URI: ");
@@ -182,13 +199,12 @@ static int my_rfc1867_callback(unsigned int event, void* event_data, void** extr
             int fd = UL_G(fd);
             if (fd != -1) {
                 multipart_event_file_end* data = (multipart_event_file_end*)event_data;
-                size_t file_id                 = UL_G(file_id);
                 smart_string s                 = { NULL, 0, 0 };
                 char* filename                 = data->temp_filename;
 
                 get_current_time(&s);
                 smart_string_appends(&s, " File ID: ");
-                smart_string_append_long(&s, (unsigned long int)file_id);
+                get_fileid(&s);
                 smart_string_appends(&s, "\nTemporary filename: ");
                 smart_string_appends(&s, filename ? filename : "N/A");
                 smart_string_appends(&s, "\nUpload status: ");
