@@ -1,14 +1,17 @@
 #include "php_ul.h"
 
 #include <assert.h>
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 #include <Zend/zend.h>
+#include <Zend/zend_virtual_cwd.h>
 #include <ext/standard/php_smart_string.h>
 #include <ext/standard/info.h>
 #include <main/rfc1867.h>
@@ -21,8 +24,9 @@ static void (*old_move_uploaded_file)(INTERNAL_FUNCTION_PARAMETERS) = NULL;
 ZEND_DECLARE_MODULE_GLOBALS(uploadlogger);
 
 PHP_INI_BEGIN()
-    STD_PHP_INI_BOOLEAN("ul.enabled", "0",    PHP_INI_PERDIR, OnUpdateBool,   enabled, zend_uploadlogger_globals, uploadlogger_globals)
-    STD_PHP_INI_ENTRY("ul.dir",       "/tmp", PHP_INI_PERDIR, OnUpdateString, dir,     zend_uploadlogger_globals, uploadlogger_globals)
+    STD_PHP_INI_BOOLEAN("ul.enabled",           "0",    PHP_INI_PERDIR, OnUpdateBool,   enabled, zend_uploadlogger_globals, uploadlogger_globals)
+    STD_PHP_INI_ENTRY("ul.dir",                 "/tmp", PHP_INI_PERDIR, OnUpdateString, dir,     zend_uploadlogger_globals, uploadlogger_globals)
+    STD_PHP_INI_ENTRY("ul.verification_script", "",     PHP_INI_PERDIR, OnUpdateString, script,  zend_uploadlogger_globals, uploadlogger_globals)
 PHP_INI_END()
 
 static char* get_filename()
@@ -30,6 +34,23 @@ static char* get_filename()
     char* buf;
     spprintf(&buf, 1024, "%s/%lu.log", UL_G(dir), (unsigned long)getuid());
     return buf;
+}
+
+static void get_fileid(smart_string* s)
+{
+    unsigned long int pid = (unsigned long int)getpid();
+    unsigned long int ctr = (unsigned long int)UL_G(ctr);
+#ifdef ZTS
+    unsigned long int tid = (unsigned long int)tsrm_thread_id();
+#endif
+
+    smart_string_append_long(s, pid);
+    smart_string_appendc(s, '_');
+#ifdef ZTS
+    smart_string_append_long(s, tid);
+    smart_string_appendc(s, '_');
+#endif
+    smart_string_append_long(s, ctr);
 }
 
 static void get_remote_addr(smart_string* s)
@@ -122,6 +143,75 @@ static ssize_t safe_write(int fd, const char* buf, size_t len)
     return res;
 }
 
+static int verify_file(smart_string* out, const char* script, const char* file)
+{
+    FILE* f;
+    int outcome;
+
+    while (isspace(*script)) {
+        ++script;
+    }
+
+    if (!*script) {
+        return SUCCESS;
+    }
+
+    {
+        struct stat st;
+        if (VCWD_STAT(script, &st) < 0) {
+            zend_error(E_WARNING, "Unable to stat() the upload verification script (%s), dropping the file", script);
+            return FAILURE;
+        }
+    }
+
+    {
+        char* buf;
+        spprintf(&buf, 0, "%s %s 2>&1", script, file);
+        if (UNEXPECTED(!buf)) {
+            zend_error(E_WARNING, "Out of memory");
+            return FAILURE;
+        }
+
+        f = VCWD_POPEN(buf, "r");
+        efree(buf);
+    }
+
+    if (!f) {
+        zend_error(E_WARNING, "Unable to run the upload verification script (%s), dropping the file", script);
+        return FAILURE;
+    }
+
+    {
+        char c;
+        char buf[512];
+        size_t n = fread(&c, 1, sizeof(c), f);
+        if (!n) {
+            pclose(f);
+            zend_error(E_WARNING, "Upload verification script returned no data, dropping the file");
+            return FAILURE;
+        }
+
+        if (c != '+') {
+            outcome = FAILURE;
+            smart_string_appends(out, "The file is disallowed by the verification script:\n");
+            smart_string_appendc(out, c);
+            while ((n = fread(buf, 1, 512, f)) != 0) {
+                smart_string_appendl(out, buf, n);
+            }
+        }
+        else {
+            outcome = SUCCESS;
+            smart_string_appends(out, "The file is allowed by the verification script\n");
+            while ((n = fread(buf, 1, 512, f)) != 0) {
+                // Do nothing
+            }
+        }
+    }
+
+    pclose(f);
+    return outcome;
+}
+
 static int my_rfc1867_callback(unsigned int event, void* event_data, void** extra)
 {
     if (UL_G(enabled) && UL_G(dir)) {
@@ -149,9 +239,9 @@ static int my_rfc1867_callback(unsigned int event, void* event_data, void** extr
 
             efree(filename);
             UL_G(fd) = fd;
+            ++UL_G(ctr);
 
             {
-                size_t file_id        = ++UL_G(file_id);
                 smart_string s        = { NULL, 0, 0 };
                 char* filename        = *(data->filename);
                 char* path_translated = SG(request_info).path_translated;
@@ -160,7 +250,7 @@ static int my_rfc1867_callback(unsigned int event, void* event_data, void** extr
 
                 get_current_time(&s);
                 smart_string_appends(&s, " File ID: ");
-                smart_string_append_long(&s, (unsigned long int)file_id);
+                get_fileid(&s);
                 smart_string_appends(&s, "\nFilename: ");
                 smart_string_appends(&s, filename ? filename : "N/A");
                 smart_string_appends(&s, "\nREQUEST_URI: ");
@@ -182,18 +272,30 @@ static int my_rfc1867_callback(unsigned int event, void* event_data, void** extr
             int fd = UL_G(fd);
             if (fd != -1) {
                 multipart_event_file_end* data = (multipart_event_file_end*)event_data;
-                size_t file_id                 = UL_G(file_id);
                 smart_string s                 = { NULL, 0, 0 };
                 char* filename                 = data->temp_filename;
+                int fail                       = 0;
 
                 get_current_time(&s);
                 smart_string_appends(&s, " File ID: ");
-                smart_string_append_long(&s, (unsigned long int)file_id);
+                get_fileid(&s);
                 smart_string_appends(&s, "\nTemporary filename: ");
                 smart_string_appends(&s, filename ? filename : "N/A");
                 smart_string_appends(&s, "\nUpload status: ");
                 smart_string_append_long(&s, data->cancel_upload);
-                smart_string_appends(&s, "\n\n\n");
+                smart_string_appendc(&s, '\n');
+                smart_string_0(&s);
+
+                safe_write(fd, s.c, s.len);
+                s.len = 0;
+
+                if (!data->cancel_upload && UL_G(script) && EXPECTED(data->temp_filename)) {
+                    if (FAILURE == verify_file(&s, UL_G(script), data->temp_filename)) {
+                        fail = 1;
+                    }
+                }
+
+                smart_string_appends(&s, "\n\n");
                 smart_string_0(&s);
 
                 safe_write(fd, s.c, s.len);
@@ -201,6 +303,10 @@ static int my_rfc1867_callback(unsigned int event, void* event_data, void** extr
                 fsync(fd);
                 close(fd);
                 UL_G(fd) = -1;
+
+                if (fail) {
+                    return FAILURE;
+                }
             }
         }
     }
@@ -262,10 +368,11 @@ static PHP_FUNCTION(move_uploaded_file)
 
 static PHP_GINIT_FUNCTION(uploadlogger)
 {
-    uploadlogger_globals->enabled  = 0;
-    uploadlogger_globals->dir      = NULL;
-    uploadlogger_globals->fd       = -1;
-    uploadlogger_globals->file_id  = 0;
+    uploadlogger_globals->enabled = 0;
+    uploadlogger_globals->dir     = NULL;
+    uploadlogger_globals->script  = NULL;
+    uploadlogger_globals->fd      = -1;
+    uploadlogger_globals->ctr     = 0;
 }
 
 static PHP_MINIT_FUNCTION(uploadlogger)
