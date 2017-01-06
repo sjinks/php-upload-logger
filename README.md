@@ -200,7 +200,7 @@ if [ "x$1" = "x" ]; then
 fi
 
 # Scan the file with ClamAV
-# Return code of 0 means the file is possible clean
+# Return code of 0 means the file is possibly clean
 OUT=$(clamdscan --fdpass --infected --no-summary "$1")
 RC=$?
 
