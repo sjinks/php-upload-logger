@@ -35,7 +35,7 @@ static char* get_filename()
 static void get_fileid(smart_string* s)
 {
     unsigned long int pid = (unsigned long int)getpid();
-    unsigned long int ctr = (unsigned long int)UL_G(file_id);
+    unsigned long int ctr = (unsigned long int)UL_G(ctr);
 #ifdef ZTS
     unsigned long int tid = (unsigned long int)tsrm_thread_id();
 #endif
@@ -166,7 +166,7 @@ static int my_rfc1867_callback(unsigned int event, void* event_data, void** extr
 
             efree(filename);
             UL_G(fd) = fd;
-            ++UL_G(file_id);
+            ++UL_G(ctr);
 
             {
                 smart_string s        = { NULL, 0, 0 };
@@ -278,10 +278,10 @@ static PHP_FUNCTION(move_uploaded_file)
 
 static PHP_GINIT_FUNCTION(uploadlogger)
 {
-    uploadlogger_globals->enabled  = 0;
-    uploadlogger_globals->dir      = NULL;
-    uploadlogger_globals->fd       = -1;
-    uploadlogger_globals->file_id  = 0;
+    uploadlogger_globals->enabled = 0;
+    uploadlogger_globals->dir     = NULL;
+    uploadlogger_globals->fd      = -1;
+    uploadlogger_globals->ctr     = 0;
 }
 
 static PHP_MINIT_FUNCTION(uploadlogger)
