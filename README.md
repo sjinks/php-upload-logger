@@ -48,12 +48,12 @@ extension was born :-)
 phpize && ./configure && make && sudo make install
 ```
 
-Tested to work under PHP 7.0 and 7.1. Will not compile for PHP 5,
+Tested to work under PHP 7.0 and 7.1. It will not compile for PHP 5,
 but it should be trivial to fix.
 
 ## Configuration
 
-Right now there are two configuration directives (to be added to
+Right now there are three configuration directives (to be added to
 `php.ini`) controlling the behavior of the extsnsion (both are
 `PHP_INI_PREDIR`):
 
@@ -61,6 +61,8 @@ Right now there are two configuration directives (to be added to
   Logger is enabled.
   * `ul.dir` (string, default is `/tmp`): directory where Upload
   Logger writes its log files.
+  * `ul.verification_script` (string, default is empty): path to
+  the verification script to be run for every uploaded file.
 
 Log files are named `UID`.log, where `UID` is the ID of the user
 PHP runs as. Log files are created with 0600 permissions.
@@ -95,7 +97,7 @@ and the new filenames.
 This is how the log file looks like:
 
 ```
-[2017-01-05 13:43:05] File ID: 1
+[2017-01-05 13:43:05] File ID: 27008_139636915363904_1
 Filename: 3 - 1.JPG
 REQUEST_URI: /wp-admin/async-upload.php
 PATH_TRANSLATED: /home/***/wp-admin/async-upload.php
@@ -104,7 +106,7 @@ REMOTE_ADDR: 1.2.3.4
 HTTP_X_FORWARDED_FOR: 5.6.7.8
 
 
-[2017-01-05 13:43:05] File ID: 1
+[2017-01-05 13:43:05] File ID: 27008_139636915363904_1
 Temporary filename: /tmp/phpJvX3jY
 Upload status: 0
 
@@ -117,10 +119,13 @@ move_uploaded_file: old=/tmp/phpJvX3jY, new=/home/*/wp-content/uploads/2017/01/3
 
 *The first block* is written during the `MULTIPART_EVENT_FILE_START` phase.
 
-`File ID` was meant to distinguish between different threads but
-(a) it was used incorrectly (should be a static global, not TS global),
-(b) it does not work for multiprocess configurations anyway (php-cgi or
-php-fpm).
+`File ID` is used to distinguish between different threads and processes
+and consists of two (NTS) or three (ZTS) fields separarted with `_`:
+`PID_TID_CTR`
+
+  * `PID` is the process ID (useful for, say, php-fpm or php-cgi);
+  * `TID` is thread ID (only if PHP was compiled with ZTS support);
+  * `CTR` incrementing counter for the given `PID` and `TID`.
 
 `Filename` is the original filename.
 
@@ -139,9 +144,7 @@ CLI binary runs in server mode, `REMOTE_ADDR` et al are not available).
 *The second block* is written during the `MULTIPART_EVENT_FILE_END` phase.
 
 `Temporary filename` is the name of the temporary file to which PHP has
-written the uploaded data (someday I will probably implement a hook
-allowing for running an external script to check the uploaded file
-and reject the upload if the file is found to be malicious).
+written the uploaded data.
 
 `Upload status` is the indication whether the file has been successully
 uploaded (0). The codes are available [here](http://php.net/manual/en/features.file-upload.errors.php).
@@ -160,3 +163,78 @@ move_uploaded_file: old=TEMPORARY_FILENAME, new=NEW_FILENAME, status=SUCCESS_or_
 `move_uploaded_file($old, $new)`) and status (`SUCCESS` or `FAILURE`) is the result
 returned by `move_uploaded_file` (`SUCCESS` obviously corresponds to `true`).
 
+## Upload Verification Script
+
+Upload Logger can run custom verification script for every uploaded file.
+The name of the script is specified in the `ul.verification_script`
+configuration directive.
+
+The script must be an executable (script or binary) file.
+
+**WARNING:** failure to locate or execute the script leads to rejection of
+the uploaded file.
+
+The verification script is invoked as follows:
+
+```bash
+/path/to/script /path/to/uploaded/file 2>&1
+```
+
+That is, the name of the file to check is given as the first argument.
+
+If the script has no objections as to the uploaded file, it should print
+the plus (`+`) sign. Everything else is treated as the objection.
+
+### Sample Verification Script
+
+The script below assumes that you have the ClamAV daemon installed and
+running, and `clamdscan` binary is available.
+
+```bash
+#!/bin/sh
+
+# This normally should not happen unless the script is invoked manually
+if [ "x$1" = "x" ]; then
+    echo '-'
+    exit 10
+fi
+
+# Scan the file with ClamAV
+# Return code of 0 means the file is possible clean
+OUT=$(clamdscan --fdpass --infected --no-summary "$1")
+RC=$?
+
+if [ $RC -eq 0 ]; then
+    # Allow the file
+    echo '+'
+else
+    # Reject the file and print the scan log
+    echo '-'
+    echo "$OUT"
+fi
+
+exit $RC
+
+```
+
+Possible output when the [EICAR Test File](https://en.wikipedia.org/wiki/EICAR_test_file)
+is uploaded:
+
+```
+[2017-01-06 11:20:31] File ID: 27008_139636915363904_1
+Filename: eicar.com
+REQUEST_URI: /index.php
+PATH_TRANSLATED: /var/www/php-upload-logger-test/index.php
+QUERY_STRING: N/A
+REMOTE_ADDR: N/A
+
+
+[2017-01-06 11:20:31] File ID: 27008_139636915363904_1
+Temporary filename: /tmp/phpqIjGWR
+Upload status: 0
+The file is disallowed by the verification script:
+-
+/tmp/phpqIjGWR: Eicar-Test-Signature FOUND
+
+
+```
