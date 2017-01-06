@@ -28,6 +28,7 @@ extern zend_module_entry uploadlogger_module_entry;
 
 ZEND_BEGIN_MODULE_GLOBALS(uploadlogger)
     char* dir;
+    char* script;
     size_t ctr;
     int fd;
     zend_bool enabled;
