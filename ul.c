@@ -283,7 +283,7 @@ static int my_rfc1867_callback(unsigned int event, void* event_data, void** extr
                 smart_string_appends(&s, filename ? filename : "N/A");
                 smart_string_appends(&s, "\nUpload status: ");
                 smart_string_append_long(&s, data->cancel_upload);
-                smart_string_appends(&s, "\n\n\n");
+                smart_string_appendc(&s, '\n');
                 smart_string_0(&s);
 
                 safe_write(fd, s.c, s.len);
@@ -293,12 +293,12 @@ static int my_rfc1867_callback(unsigned int event, void* event_data, void** extr
                     if (FAILURE == verify_file(&s, UL_G(script), data->temp_filename)) {
                         fail = 1;
                     }
-
-                    if (s.len) {
-                        safe_write(fd, s.c, s.len);
-                    }
                 }
 
+                smart_string_appends(&s, "\n\n");
+                smart_string_0(&s);
+
+                safe_write(fd, s.c, s.len);
                 smart_string_free(&s);
                 fsync(fd);
                 close(fd);
