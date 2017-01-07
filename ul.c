@@ -497,7 +497,7 @@ static int save_unclaimed_file(zval* z)
 
 static PHP_RSHUTDOWN_FUNCTION(uploadlogger)
 {
-    if (UL_G(save_unclaimed) && zend_hash_num_elements(SG(rfc1867_uploaded_files)) > 0) {
+    if (UL_G(save_unclaimed) && SG(rfc1867_uploaded_files) && zend_hash_num_elements(SG(rfc1867_uploaded_files)) > 0) {
         char* target_dir = UL_G(unclaimed_dir);
         int fd;
 
