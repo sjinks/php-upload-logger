@@ -29,9 +29,11 @@ extern zend_module_entry uploadlogger_module_entry;
 ZEND_BEGIN_MODULE_GLOBALS(uploadlogger)
     char* dir;
     char* script;
+    char* unclaimed_dir;
     size_t ctr;
     int fd;
     zend_bool enabled;
+    zend_bool save_unclaimed;
 ZEND_END_MODULE_GLOBALS(uploadlogger)
 
 UL_VISIBILITY_HIDDEN extern ZEND_DECLARE_MODULE_GLOBALS(uploadlogger)

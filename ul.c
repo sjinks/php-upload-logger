@@ -12,8 +12,10 @@
 #include <unistd.h>
 #include <Zend/zend.h>
 #include <Zend/zend_virtual_cwd.h>
-#include <ext/standard/php_smart_string.h>
 #include <ext/standard/info.h>
+#include <ext/standard/file.h>
+#include <ext/standard/php_smart_string.h>
+#include <ext/standard/php_string.h>
 #include <main/rfc1867.h>
 #include <main/SAPI.h>
 #include <main/spprintf.h>
@@ -24,9 +26,11 @@ static void (*old_move_uploaded_file)(INTERNAL_FUNCTION_PARAMETERS) = NULL;
 ZEND_DECLARE_MODULE_GLOBALS(uploadlogger);
 
 PHP_INI_BEGIN()
-    STD_PHP_INI_BOOLEAN("ul.enabled",           "0",    PHP_INI_PERDIR, OnUpdateBool,   enabled, zend_uploadlogger_globals, uploadlogger_globals)
-    STD_PHP_INI_ENTRY("ul.dir",                 "/tmp", PHP_INI_PERDIR, OnUpdateString, dir,     zend_uploadlogger_globals, uploadlogger_globals)
-    STD_PHP_INI_ENTRY("ul.verification_script", "",     PHP_INI_PERDIR, OnUpdateString, script,  zend_uploadlogger_globals, uploadlogger_globals)
+    STD_PHP_INI_BOOLEAN("ul.enabled",              "0",    PHP_INI_PERDIR, OnUpdateBool,   enabled,        zend_uploadlogger_globals, uploadlogger_globals)
+    STD_PHP_INI_ENTRY("ul.dir",                    "/tmp", PHP_INI_PERDIR, OnUpdateString, dir,            zend_uploadlogger_globals, uploadlogger_globals)
+    STD_PHP_INI_ENTRY("ul.verification_script",    "",     PHP_INI_PERDIR, OnUpdateString, script,         zend_uploadlogger_globals, uploadlogger_globals)
+    STD_PHP_INI_BOOLEAN("ul.save_unclaimed_files", "0",    PHP_INI_SYSTEM, OnUpdateBool,   save_unclaimed, zend_uploadlogger_globals, uploadlogger_globals)
+    STD_PHP_INI_ENTRY("ul.unclaimed_files_dir",    "",     PHP_INI_SYSTEM, OnUpdateString, unclaimed_dir,  zend_uploadlogger_globals, uploadlogger_globals)
 PHP_INI_END()
 
 static char* get_filename()
@@ -393,11 +397,13 @@ static PHP_FUNCTION(move_uploaded_file)
 
 static PHP_GINIT_FUNCTION(uploadlogger)
 {
-    uploadlogger_globals->enabled = 0;
-    uploadlogger_globals->dir     = NULL;
-    uploadlogger_globals->script  = NULL;
-    uploadlogger_globals->fd      = -1;
-    uploadlogger_globals->ctr     = 0;
+    uploadlogger_globals->dir            = NULL;
+    uploadlogger_globals->script         = NULL;
+    uploadlogger_globals->unclaimed_dir  = NULL;
+    uploadlogger_globals->ctr            = 0;
+    uploadlogger_globals->fd             = -1;
+    uploadlogger_globals->enabled        = 0;
+    uploadlogger_globals->save_unclaimed = 0;
 }
 
 static PHP_MINIT_FUNCTION(uploadlogger)
@@ -417,7 +423,6 @@ static PHP_MINIT_FUNCTION(uploadlogger)
 
 static PHP_MSHUTDOWN_FUNCTION(uploadlogger)
 {
-    UNREGISTER_INI_ENTRIES();
     php_rfc1867_callback = old_rfc1867_callback;
 
     if (old_move_uploaded_file) {
@@ -431,6 +436,7 @@ static PHP_MSHUTDOWN_FUNCTION(uploadlogger)
         close(UL_G(fd));
     }
 
+    UNREGISTER_INI_ENTRIES();
     return SUCCESS;
 }
 
@@ -444,6 +450,113 @@ static PHP_MINFO_FUNCTION(uploadlogger)
     DISPLAY_INI_ENTRIES();
 }
 
+static int save_unclaimed_file(zval* z)
+{
+    zend_string* filename = Z_STR_P(z);
+    char* target_dir      = UL_G(unclaimed_dir);
+    smart_string target   = { NULL, 0, 0 };
+    smart_string s        = { NULL, 0, 0 };
+
+    {
+        time_t now = time(NULL);
+        zend_string* fname_base = php_basename(ZSTR_VAL(filename), ZSTR_LEN(filename), NULL, 0);
+        smart_string_appends(&target, target_dir);
+        smart_string_appendc(&target, '/');
+        smart_string_appendl(&target, ZSTR_VAL(fname_base), ZSTR_LEN(fname_base));
+        smart_string_appendc(&target, '-');
+        smart_string_append_long(&target, (unsigned long)now);
+        smart_string_0(&target);
+        zend_string_release(fname_base);
+    }
+
+    if (VCWD_RENAME(ZSTR_VAL(filename), target.c) == 0) {
+        smart_string_appends(&s, "Moved unclaimed file ");
+        smart_string_appendl(&s, ZSTR_VAL(filename), ZSTR_LEN(filename));
+        smart_string_appends(&s, " to ");
+        smart_string_append(&s, &target);
+    }
+    else if (php_copy_file_ex(ZSTR_VAL(filename), target.c, STREAM_DISABLE_OPEN_BASEDIR) == SUCCESS) {
+        smart_string_appends(&s, "Copied unclaimed file ");
+        smart_string_appendl(&s, ZSTR_VAL(filename), ZSTR_LEN(filename));
+        smart_string_appends(&s, " to ");
+        smart_string_append(&s, &target);
+
+        VCWD_UNLINK(ZSTR_VAL(filename));
+    }
+    else {
+        smart_string_appends(&s, "Failed to handle unclaimed file ");
+        smart_string_appendl(&s, ZSTR_VAL(filename), ZSTR_LEN(filename));
+    }
+
+    smart_string_appendc(&s, '\n');
+    safe_write(UL_G(fd), s.c, s.len);
+    smart_string_free(&s);
+    smart_string_free(&target);
+    return ZEND_HASH_APPLY_KEEP;
+}
+
+static PHP_RSHUTDOWN_FUNCTION(uploadlogger)
+{
+    if (UL_G(save_unclaimed) && zend_hash_num_elements(SG(rfc1867_uploaded_files)) > 0) {
+        char* target_dir = UL_G(unclaimed_dir);
+        int fd;
+
+        while (isspace(*target_dir)) {
+            ++target_dir;
+        }
+
+        if (!*target_dir) {
+            return SUCCESS;
+        }
+
+        {
+            struct stat st;
+            if (VCWD_STAT(target_dir, &st) < 0 || !S_ISDIR(st.st_mode)) {
+                zend_error(E_NOTICE, "ul.unclaimed_files_dir does not exist or not a directory");
+                return SUCCESS;
+            }
+        }
+
+        {
+            char* filename = get_filename();
+            if (UNEXPECTED(!filename)) {
+                return SUCCESS;
+            }
+
+            fd = open(filename, O_CREAT | O_APPEND | O_WRONLY, 0600);
+            if (fd == -1) {
+                zend_error(E_WARNING, "Failed to open file %s (%s)", filename, strerror(errno));
+                efree(filename);
+                return SUCCESS;
+            }
+
+            efree(filename);
+            UL_G(fd) = fd;
+        }
+
+        {
+            smart_string s = { NULL, 0, 0 };
+            get_current_time(&s);
+            smart_string_appends(&s, "\nSaving unclaimed files\n");
+            safe_write(fd, s.c, s.len);
+
+            UL_G(unclaimed_dir) = target_dir;
+            zend_hash_apply(SG(rfc1867_uploaded_files), save_unclaimed_file);
+
+            s.len = 0;
+            smart_string_appendl(&s, "\n\n", 2);
+            safe_write(fd, s.c, s.len);
+            smart_string_free(&s);
+        }
+
+        fsync(fd);
+        close(fd);
+        UL_G(fd) = -1;
+    }
+
+    return SUCCESS;
+}
+
 zend_module_entry uploadlogger_module_entry = {
     STANDARD_MODULE_HEADER,
     PHP_UL_EXTNAME,
@@ -451,7 +564,7 @@ zend_module_entry uploadlogger_module_entry = {
     PHP_MINIT(uploadlogger),
     PHP_MSHUTDOWN(uploadlogger),
     NULL,
-    NULL,
+    PHP_RSHUTDOWN(uploadlogger),
     PHP_MINFO(uploadlogger),
     PHP_UL_EXTVER,
     PHP_MODULE_GLOBALS(uploadlogger),
