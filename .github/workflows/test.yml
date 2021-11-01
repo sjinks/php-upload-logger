@@ -38,7 +38,7 @@ jobs:
           tools: none
 
       - name: Build
-        run: phpize && ./configure CFLAGS="${{ matrix.compiler.CFLAGS }}" CC=${{ matrix.compiler.CC }} --silent && make --silent
+        run: phpize && ./configure CC=${{ matrix.compiler.CC }} --silent && make --silent
 
       - name: Run tests
         run: make test
